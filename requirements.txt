@@ -4,5 +4,5 @@ heartpy
 scipy
 numpy
 flask-cors
-setuptools
+setuptools>=65.5.0
 gunicorn 
