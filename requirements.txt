@@ -3,3 +3,5 @@ wfdb
 heartpy
 scipy
 numpy
+flask-cors
+setuptools
