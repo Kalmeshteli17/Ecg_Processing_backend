@@ -6,13 +6,12 @@ import wfdb
 import heartpy as hp
 from scipy import signal as sp_signal
 
-record_id = sys.argv[1] if len(sys.argv) > 1 else None
-
-if record_id is None:
-    # This should ideally not happen if app.py passes the record_id
-    # but good for standalone testing or direct calls
-    print("Usage: python process_ecg.py <record_id>")
+# Ensure record_id is always passed. If not, exit immediately.
+if len(sys.argv) < 2:
+    print("Error: record_id not provided. Usage: python process_ecg.py <record_id>")
     sys.exit(1)
+
+record_id = sys.argv[1] # This should now always be the UUID from app.py
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 
@@ -21,26 +20,52 @@ output_data = os.path.join(project_root, 'outputs')
 
 print(f"Processing record_id: {record_id} in {uploads_data}")
 
+# Verify all three required files exist
 required_exts = [".hea", ".dat", ".atr"]
 for ext in required_exts:
-    file_path = os.path.join(uploads_data, f"{record_id}{ext}")
+    file_path = os.path.join(uploads_data, f"{record_id}.{ext}")
     if not os.path.exists(file_path):
-        print(f"Error: Missing file: {file_path}")
+        print(f"Error: Missing expected file: {file_path}")
         sys.exit(1) # Exit with an error code if a file is missing
 
-record_path = os.path.join(uploads_data, record_id)
+# CRITICAL CHANGE: wfdb.rdrecord expects just the base record name,
+# and it will look for the .hea, .dat, .atr files in the specified directory.
+# The directory is implicitly the current working directory, or can be specified with 'pb_dir'.
+# Since we are already in the correct directory, or have constructed paths, we give it the base name.
+
+# Option 1: Change current directory to uploads_data, then call wfdb.rdrecord
+# This is often the simplest way to handle wfdb
+original_cwd = os.getcwd()
 try:
-    record = wfdb.rdrecord(record_path)
+    os.chdir(uploads_data)
+    print(f"Changed current directory to: {os.getcwd()}")
+    record = wfdb.rdrecord(record_id) # Now simply pass the record_id
     fs = record.fs
     ecg_signal = record.p_signal[:, 0]
-    print(f"Successfully read record: {record_path}, Sampling Frequency: {fs}")
+    print(f"Successfully read record: {record_id}, Sampling Frequency: {fs}")
 except Exception as e:
-    print(f"Error reading WFDB record {record_path}: {e}")
+    print(f"Error reading WFDB record {record_id} from {uploads_data}: {e}")
     sys.exit(1)
+finally:
+    # Always change back to original directory to avoid affecting other parts of the app
+    os.chdir(original_cwd)
+    print(f"Changed back to original directory: {os.getcwd()}")
+
+
+# Option 2 (Alternative - if Option 1 causes issues): Pass pb_dir explicitly
+# This requires wfdb.rdrecord to support pb_dir for local paths, which it usually does.
+# try:
+#     record = wfdb.rdrecord(record_id, pb_dir=uploads_data)
+#     fs = record.fs
+#     ecg_signal = record.p_signal[:, 0]
+#     print(f"Successfully read record: {record_id}, Sampling Frequency: {fs}")
+# except Exception as e:
+#     print(f"Error reading WFDB record {record_id} from {uploads_data}: {e}")
+#     sys.exit(1)
+
 
 def fir_bandpass(ecg, fs, low=3, high=45, taps=101):
     nyq = 0.5 * fs
-    # Ensure filter taps are odd for symmetry
     if taps % 2 == 0:
         taps += 1
     filt = sp_signal.firwin(taps, [low / nyq, high / nyq], pass_zero=False)
@@ -55,7 +80,6 @@ def detect_r(filtered, fs):
         return np.array(wd['peaklist'])
     except Exception as e:
         print(f"Error during R-peak detection: {e}")
-        # Return an empty array or handle gracefully to prevent further errors
         return np.array([])
 
 r_peaks = detect_r(filtered, fs)
@@ -64,7 +88,6 @@ print(f"Detected {len(r_peaks)} R-peaks.")
 def detect_pqrst(filtered, r_peaks, fs):
     p, q, s, t = [], [], [], []
     for r in r_peaks:
-        # Ensure indices are within bounds and are integers
         r_int = int(r)
         
         q_idx_start = max(0, r_int - int(0.08 * fs))
@@ -84,7 +107,6 @@ def detect_pqrst(filtered, r_peaks, fs):
         q.append(q_val)
         s.append(s_val)
 
-        # Re-check for None after appending
         qp = q[-1]
         sp = s[-1]
 
@@ -122,19 +144,15 @@ os.makedirs(output_data, exist_ok=True)
 plot_path = os.path.join(output_data, f"ecg_plot{record_id}.json")
 phases_path = os.path.join(output_data, f"ecg_phases{record_id}.json")
 
-# Dump only the first 60 seconds of the filtered signal
 with open(plot_path, 'w') as f:
     json.dump(filtered[:fs * 60].tolist(), f)
 print(f"Plot data saved to {plot_path}")
 
 phases = []
-# Convert indices to time (seconds) for JSON output
 waves = {w: [i / fs for i in info[w] if i is not None] for w in ['P', 'Q', 'S', 'T']}
 
-# Calculate and append phases
 for i in range(min(len(waves.get('P', [])), len(waves.get('Q', [])), len(waves.get('S', [])), len(waves.get('T', [])))):
     try:
-        # Ensure that P, Q, S, T waves are available for the current index
         if waves['P'][i] is not None and waves['Q'][i] is not None:
             phases.append({"entry": waves['P'][i], "duration": waves['Q'][i] - waves['P'][i], "phase": "PQ"})
         if waves['Q'][i] is not None and waves['S'][i] is not None:
@@ -142,7 +160,6 @@ for i in range(min(len(waves.get('P', [])), len(waves.get('Q', [])), len(waves.g
         if waves['S'][i] is not None and waves['T'][i] is not None:
             phases.append({"entry": waves['S'][i], "duration": waves['T'][i] - waves['S'][i], "phase": "ST"})
     except IndexError:
-        # This might happen if one wave list is shorter than others for some reason
         print(f"Warning: Skipping phase calculation for index {i} due to missing wave data.")
         continue
     except Exception as e:
