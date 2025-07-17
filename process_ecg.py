@@ -11,7 +11,7 @@ if len(sys.argv) < 2:
     print("Error: record_id not provided. Usage: python process_ecg.py <record_id>")
     sys.exit(1)
 
-record_id = sys.argv[1] # This should now always be the UUID from app.py
+record_id = sys.argv[1] # This will be the UUID (e.g., '0e4a684c')
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 
@@ -28,40 +28,17 @@ for ext in required_exts:
         print(f"Error: Missing expected file: {file_path}")
         sys.exit(1) # Exit with an error code if a file is missing
 
-# CRITICAL CHANGE: wfdb.rdrecord expects just the base record name,
-# and it will look for the .hea, .dat, .atr files in the specified directory.
-# The directory is implicitly the current working directory, or can be specified with 'pb_dir'.
-# Since we are already in the correct directory, or have constructed paths, we give it the base name.
-
-# Option 1: Change current directory to uploads_data, then call wfdb.rdrecord
-# This is often the simplest way to handle wfdb
-original_cwd = os.getcwd()
+# CRITICAL CHANGE: Use pb_dir parameter to explicitly tell wfdb where to find the files.
+# This is often more robust than os.chdir for wfdb, especially in deployed environments.
 try:
-    os.chdir(uploads_data)
-    print(f"Changed current directory to: {os.getcwd()}")
-    record = wfdb.rdrecord(record_id) # Now simply pass the record_id
+    # Pass the record_id (base name) and the directory where the files are located
+    record = wfdb.rdrecord(record_id, pb_dir=uploads_data)
     fs = record.fs
     ecg_signal = record.p_signal[:, 0]
     print(f"Successfully read record: {record_id}, Sampling Frequency: {fs}")
 except Exception as e:
     print(f"Error reading WFDB record {record_id} from {uploads_data}: {e}")
     sys.exit(1)
-finally:
-    # Always change back to original directory to avoid affecting other parts of the app
-    os.chdir(original_cwd)
-    print(f"Changed back to original directory: {os.getcwd()}")
-
-
-# Option 2 (Alternative - if Option 1 causes issues): Pass pb_dir explicitly
-# This requires wfdb.rdrecord to support pb_dir for local paths, which it usually does.
-# try:
-#     record = wfdb.rdrecord(record_id, pb_dir=uploads_data)
-#     fs = record.fs
-#     ecg_signal = record.p_signal[:, 0]
-#     print(f"Successfully read record: {record_id}, Sampling Frequency: {fs}")
-# except Exception as e:
-#     print(f"Error reading WFDB record {record_id} from {uploads_data}: {e}")
-#     sys.exit(1)
 
 
 def fir_bandpass(ecg, fs, low=3, high=45, taps=101):
